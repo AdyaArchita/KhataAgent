@@ -44,10 +44,12 @@ class RunDetail(RunSummary):
     generated_code: Optional[str] = None
     execution_result: Any
 
+from typing import Literal
+
 class ClearancePayload(BaseModel):
-    decision: str
-    reason: str
-    reviewed_by: str
+    decision: Literal['approve', 'reject', 'override']
+    reason: constr(min_length=5)
+    reviewed_by: str = "demo_user"
     notes: Optional[str] = None
 
 # ── FastAPI App ───────────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ class MatchStatus(str, Enum):
     PARTIAL_MATCH = "PARTIAL_MATCH"
     PENDING = "PENDING"
     SYSTEM_FAILURE = "SYSTEM_FAILURE"
+    NON_DETERMINISTIC_FAILURE = "NON_DETERMINISTIC_FAILURE"
 
 
 class Discrepancy(str, Enum):

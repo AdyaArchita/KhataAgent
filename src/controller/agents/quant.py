@@ -431,6 +431,18 @@ class QuantAgent:
                 "token_usage": token_usage,
             }
 
+        if not self_consistency:
+            logger.warning("Sandbox failure: NON_DETERMINISTIC_FAILURE")
+            return {
+                "generated_code": generated_code,
+                "execution_result": None,
+                "match_status": MatchStatus.NON_DETERMINISTIC_FAILURE,
+                "confidence": 0.0,
+                "system_failure_reason": f"Self-Consistency Replay Failed. Delta: {replay_delta}",
+                "token_usage": token_usage,
+            }
+
+
         logger.info("Sandbox execution succeeded: %s", exec_result.output)
 
         # ── interpret result ─────────────────────────────────────────
@@ -523,30 +535,20 @@ class QuantAgent:
 
         # ── determine status + confidence ────────────────────────────
         if not discrepancies:
-            # Clean match — everything agrees
             match_status = MatchStatus.MATCH
             confidence = 1.0
-
-        elif (
-            set(discrepancies).issubset({
-                Discrepancy.AMOUNT_MISMATCH, 
-                Discrepancy.TAX_MISMATCH, 
-                Discrepancy.MISSING_LINE, 
-                Discrepancy.DUPLICATE
-            })
-            and tax_rate_match
-            and 0.01 < amount_diff <= 2.00
-        ):
-            # Partial band — amount is the ONLY fundamental issue and within tolerance.
-            # (tax may differ slightly, and line item matching may fail due to the amount change, but rate matches)
+        elif 0.01 < amount_diff <= 1.00 and not any(d in discrepancies for d in [Discrepancy.GSTIN_MISMATCH, Discrepancy.TAX_MISMATCH]):
             match_status = MatchStatus.PARTIAL_MATCH
-            # Linear interpolation: diff=0.01 → 0.8,  diff=2.00 → 0.6
-            confidence = round(0.8 - 0.2 * (amount_diff - 0.01) / 1.99, 4)
-
-        else:
-            # Clear discrepancy
+            confidence = 0.8
+        elif Discrepancy.MISSING_LINE in discrepancies:
+            match_status = MatchStatus.PARTIAL_MATCH
+            confidence = 0.5
+        elif Discrepancy.GSTIN_MISMATCH in discrepancies or Discrepancy.TAX_MISMATCH in discrepancies:
             match_status = MatchStatus.MISMATCH
-            confidence = 0.9
+            confidence = 0.2
+        else:
+            match_status = MatchStatus.MISMATCH
+            confidence = 0.0
 
         return {
             "generated_code": generated_code,
