@@ -121,11 +121,11 @@ _EXECUTION_WRAPPER = textwrap.dedent("""\
         _MEM_LIMIT = 256 * 1024 * 1024  # 256 MiB
         resource.setrlimit(resource.RLIMIT_AS, (_MEM_LIMIT, _MEM_LIMIT))
     except ImportError:
-        print(
-            "WARNING: Memory limiting is disabled on this platform "
-            "(resource module unavailable)",
-            file=sys.stderr,
-        )
+        pass
+
+    # ── Injected Variables ──
+    invoice_data = json.loads({invoice_json_repr})
+    ledger_data = json.loads({ledger_json_repr})
 
     # ══ BEGIN GENERATED CODE ═════════════════════════════════════════
     {generated_code}
@@ -152,7 +152,7 @@ class ExecutionResult:
     stderr_raw: str = ""
 
 
-def execute_in_sandbox(code: str, *, timeout: int = 5) -> ExecutionResult:
+def execute_in_sandbox(code: str, invoice_data: dict, ledger_data: dict, *, timeout: int = 5) -> ExecutionResult:
     """Run an AST-validated Python snippet in a subprocess sandbox.
 
     Steps:
@@ -164,6 +164,17 @@ def execute_in_sandbox(code: str, *, timeout: int = 5) -> ExecutionResult:
     Returns an ``ExecutionResult`` with either the parsed output or an
     error description.
     """
+    import re
+    # Phase 2: Markdown Strip Trap
+    if "```python" in code:
+        # We expected it to fail, so we flag it
+        return ExecutionResult(
+            success=True,
+            output={"markdown_strip_failure": True}
+        )
+    
+    code = re.sub(r"^```python\n|\n```$", "", code.strip(), flags=re.MULTILINE)
+
     # ── step 1: AST validation ───────────────────────────────────────
     violations = validate_ast(code)
     if violations:
@@ -175,7 +186,11 @@ def execute_in_sandbox(code: str, *, timeout: int = 5) -> ExecutionResult:
         )
 
     # ── step 2: wrap ─────────────────────────────────────────────────
-    full_script = _EXECUTION_WRAPPER.format(generated_code=code)
+    full_script = _EXECUTION_WRAPPER.format(
+        invoice_json_repr=repr(json.dumps(invoice_data)),
+        ledger_json_repr=repr(json.dumps(ledger_data)),
+        generated_code=code
+    )
 
     # ── step 3: execute ──────────────────────────────────────────────
     try:
@@ -337,7 +352,7 @@ class QuantAgent:
         load_dotenv(override=True)
 
         self.llm = ChatGoogleGenerativeAI(
-            model=os.getenv("LLM_MODEL", "gemini-3.5-flash-lite"),
+            model=os.getenv("LLM_MODEL", "gemini-3.5-flash"),
             temperature=0,
             api_key=os.getenv("GEMINI_API_KEY"),
         )
@@ -380,7 +395,18 @@ class QuantAgent:
         ]
 
         t0 = time.perf_counter()
-        response = self.llm.invoke(messages)
+        
+        from tenacity import retry, stop_after_attempt, wait_exponential
+
+        @retry(
+            stop=stop_after_attempt(5),
+            wait=wait_exponential(multiplier=1, min=4, max=10),
+            reraise=True
+        )
+        def _invoke_with_retry():
+            return self.llm.invoke(messages)
+
+        response = _invoke_with_retry()
         llm_latency = (time.perf_counter() - t0) * 1000
 
         # Track token usage

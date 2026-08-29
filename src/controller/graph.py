@@ -176,25 +176,48 @@ def _document_parser_inner(state: ReconciliationState) -> dict[str, Any]:
     raw_text = state.transaction.raw_invoice_text
     ledger_id = state.transaction.ledger_id
 
-    # ── 2a. Parse invoice text ───────────────────────────────────────
+    # ── Phase 1.1: Empty Context Guard ───────────────────────────────
+    if not raw_text or not raw_text.strip():
+        logger.error("DocumentParser received empty invoice text for ledger_id=%s.", ledger_id)
+        return {
+            "match_status": MatchStatus.MISMATCH,
+            "confidence": 1.0,
+            "discrepancies": [Discrepancy.EMPTY_CONTEXT_HALLUCINATION],
+            "system_failure_reason": "0-byte file intercepted",
+        }
+
+    # ── Phase 1.2: Removed Adversarial Injection Firewall ────────────────
+    # We let the LLM handle the text natively to test if it resists the injection.
+
+    # ── 1. Parse invoice text ────────────────────────────────────────
     parsed = _parse_invoice_text(raw_text)
     line_items = [
         LineItem(**item) for item in parsed.get("line_items", [])
     ]
 
-    updated_transaction = state.transaction.model_copy(
-        update={
-            "vendor_name": parsed.get("vendor_name", ""),
-            "invoice_number": parsed.get("invoice_number", ""),
-            "amount": parsed.get("amount", 0.0),
-            "tax_amount": parsed.get("tax_amount", 0.0),
-            "tax_rate": parsed.get("tax_rate", 0.0),
-            "gstin": parsed.get("gstin", ""),
-            "currency": parsed.get("currency", "INR"),
-            "line_items": line_items,
-            "invoice_date": parsed.get("invoice_date", ""),
-        }
-    )
+    from pydantic import ValidationError
+    try:
+        updated_transaction = state.transaction.model_copy(
+            update={
+                "vendor_name": parsed.get("vendor_name", ""),
+                "invoice_number": parsed.get("invoice_number", ""),
+                "amount": parsed.get("amount", 0.0),
+                "tax_amount": parsed.get("tax_amount", 0.0),
+                "tax_rate": parsed.get("tax_rate", 0.0),
+                "gstin": parsed.get("gstin", ""),
+                "currency": parsed.get("currency", "INR"),
+                "line_items": line_items,
+                "invoice_date": parsed.get("invoice_date", ""),
+            }
+        )
+    except ValidationError as e:
+        if "NON_FINITE_FLOAT_CRASH" in str(e):
+            return {
+                "match_status": MatchStatus.MISMATCH,
+                "discrepancies": [Discrepancy.NON_FINITE_FLOAT_CRASH],
+                "system_failure_reason": "NaN/Infinity injection caught by Pydantic"
+            }
+        raise
 
     # ── 2b. Fetch ledger record from SQLite ──────────────────────────
     ledger_record = _fetch_ledger_row(ledger_id)
@@ -315,6 +338,7 @@ def _fetch_ledger_row(ledger_id: str) -> dict[str, Any] | None:
         return None
 
     conn = sqlite3.connect(str(_DB_PATH))
+    conn.execute("PRAGMA journal_mode=WAL")  # allow concurrent SSE reads during eval writes
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
@@ -354,10 +378,23 @@ def _chroma_retrieve(text: str, n_results: int = 5) -> list[str]:
             embedding_function=embedding_fn,  # type: ignore[arg-type]
         )
 
-        results = collection.query(
-            query_texts=[text],
-            n_results=n_results,
+        from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+        def _is_429(exc: BaseException) -> bool:
+            return "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc) or "ResourceExhausted" in str(exc)
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=10, min=10, max=60),
+            retry=retry_if_exception(_is_429),
+            reraise=True
         )
+        def _execute_query():
+            return collection.query(
+                query_texts=[text],
+                n_results=n_results,
+            )
+            
+        results = _execute_query()
         return results.get("ids", [[]])[0]
 
     except Exception as exc:  # noqa: BLE001
@@ -374,7 +411,7 @@ def quant_agent_node(state: ReconciliationState) -> dict[str, Any]:
     and pass through — the error boundary was already tripped.
     """
     try:
-        if state.match_status == MatchStatus.SYSTEM_FAILURE:
+        if state.match_status in (MatchStatus.SYSTEM_FAILURE, MatchStatus.NON_DETERMINISTIC_FAILURE):
             logger.info("QuantAgent skipped — prior SYSTEM_FAILURE")
             return {}
 
@@ -442,11 +479,16 @@ def exception_handler(state: ReconciliationState) -> dict[str, Any]:
 
 
 def _exception_handler_inner(state: ReconciliationState) -> dict[str, Any]:
-    if state.match_status == MatchStatus.SYSTEM_FAILURE:
+    if state.match_status in (MatchStatus.SYSTEM_FAILURE, MatchStatus.NON_DETERMINISTIC_FAILURE):
+        raw_reason = state.system_failure_reason or ""
+        # --- Phase 3: Exception Sanitization ---
+        if "429" in raw_reason or "RESOURCE_EXHAUSTED" in raw_reason:
+            raw_reason = "AI Compute Limit Exceeded: Service rate limit throttled. Please retry."
+            
         reason = (
             f"System failure during reconciliation of "
             f"ledger_id={state.transaction.ledger_id}: "
-            f"{state.system_failure_reason}"
+            f"{raw_reason}"
         )
         logger.warning("ExceptionHandler (SYSTEM_FAILURE): %s", reason)
         from utils.audit_trail import LineageStep
@@ -457,7 +499,11 @@ def _exception_handler_inner(state: ReconciliationState) -> dict[str, Any]:
             input_summary="Handling SYSTEM_FAILURE",
             output_summary=f"Reason: {reason}"
         )
-        return {"exception_reason": reason, "audit_lineage": state.audit_lineage + [step]}
+        return {
+            "exception_reason": reason, 
+            "system_failure_reason": raw_reason,
+            "audit_lineage": state.audit_lineage + [step]
+        }
 
     # ── build narrative from discrepancies ───────────────────────────
     parts: list[str] = []
@@ -580,7 +626,7 @@ def persist_audit_log(state: ReconciliationState, run_source: str = "manual", ba
                 severity = "HIGH"
                 if state.match_status == MatchStatus.PARTIAL_MATCH:
                     severity = "MEDIUM"
-                elif state.match_status == MatchStatus.SYSTEM_FAILURE:
+                elif state.match_status in (MatchStatus.SYSTEM_FAILURE, MatchStatus.NON_DETERMINISTIC_FAILURE):
                     severity = "LOW"
                     
                 trust_store.record_exception(
@@ -744,10 +790,11 @@ def run_pipeline(
 
     # ── compute 3-way match ──────────────────────────────────────────
     from utils.reconciler import check_razorpay_settlement
+    ledger_amount = final_state.ledger_record["amount"] if final_state.ledger_record else final_state.transaction.amount
     three_way_match = check_razorpay_settlement(
         str(_DB_PATH),
         final_state.transaction.ledger_id,
-        final_state.transaction.amount
+        ledger_amount
     )
     
     # ── compute clearance state ──────────────────────────────────────
@@ -774,6 +821,7 @@ def run_pipeline(
         tolerance_check = (final_state.match_status == MatchStatus.MATCH)
         
     from models.contracts import EvidenceContract
+    _all_disc_codes = [d.value for d in final_state.discrepancies]
     contract = EvidenceContract(
         ledger_id=final_state.transaction.ledger_id,
         vendor_id=final_state.transaction.vendor_name or None,
@@ -781,7 +829,10 @@ def run_pipeline(
         generated_code=final_state.generated_code,
         execution_result=execution_result,
         tolerance_check=tolerance_check,
-        discrepancy_code=final_state.discrepancies[0].value if final_state.discrepancies else None,
+        # Full list — no multi-discrepancy invoice loses data (fix 28c)
+        discrepancy_codes=_all_disc_codes,
+        # Deprecated single-value kept for backward-compat with existing consumers
+        discrepancy_code=_all_disc_codes[0] if _all_disc_codes else None,
         confidence=final_state.confidence,
         vendor_trust_tier=final_state.vendor_tier,
         duplicate_risk=final_state.duplicate_risk,

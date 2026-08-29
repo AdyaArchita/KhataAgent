@@ -15,7 +15,7 @@ import asyncio
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
-from pydantic import BaseModel, constr
+from pydantic import BaseModel, constr, Field
 from controller.vendor_trust import VendorTrustStore
 
 # ── Paths ─────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ from typing import Literal
 
 class ClearancePayload(BaseModel):
     decision: Literal['approve', 'reject', 'override']
-    reason: constr(min_length=5)
+    reason: str = Field(..., min_length=5)
     reviewed_by: str = "demo_user"
     notes: Optional[str] = None
 
@@ -116,7 +116,7 @@ def get_runs(db: sqlite3.Connection = Depends(get_db)):
         # Override visual status if human review required
         match_status = row_dict["match_status"]
         if row_dict.get("requires_human_review"):
-            match_status = "PENDING REVIEW"
+            match_status = "PENDING_REVIEW"
             
         evidence_contract = None
         if row_dict.get("evidence_contract"):
@@ -285,7 +285,7 @@ def update_clearance(run_id: str, payload: ClearancePayload, db: sqlite3.Connect
         
     try:
         evidence = json.loads(row["evidence_contract"]) if row["evidence_contract"] else {}
-    except:
+    except Exception:
         evidence = {}
         
     evidence["human_clearance"] = {
@@ -294,11 +294,31 @@ def update_clearance(run_id: str, payload: ClearancePayload, db: sqlite3.Connect
         "reason": payload.reason,
         "reviewed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
     }
-        
-    db.execute(
-        "UPDATE audit_log SET clearance_state = ? WHERE run_id = ?",
-        (new_state, run_id)
+
+    # Guarded UPDATE: only transition from PENDING_HUMAN_AUDIT.
+    # Returns 409 if another reviewer already approved/rejected this run,
+    # preventing a BLOCKED decision from being silently overwritten (fix 31a).
+    result = db.execute(
+        """UPDATE audit_log
+           SET clearance_state = ?, evidence_contract = ?
+           WHERE run_id = ? AND clearance_state = 'PENDING_HUMAN_AUDIT'""",
+        (new_state, json.dumps(evidence), run_id),
     )
+    if result.rowcount == 0:
+        # Either already processed or run_id doesn't exist
+        current = db.execute(
+            "SELECT clearance_state FROM audit_log WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Clearance conflict: run {run_id} is already in state "
+                f"'{current['clearance_state']}' and cannot be overwritten. "
+                "A concurrent reviewer may have already processed this record."
+            ),
+        )
     db.commit()
     return {"status": "success", "clearance_state": new_state, "notes": payload.notes}
 
@@ -404,7 +424,7 @@ def compute_metrics(db: sqlite3.Connection) -> dict:
             matches += 1
         elif st == "PARTIAL_MATCH":
             partials += 1
-        elif st in ("MISMATCH", "SYSTEM_FAILURE"):
+        elif st in ("MISMATCH", "SYSTEM_FAILURE", "NON_DETERMINISTIC_FAILURE", "PENDING_REVIEW"):
             exceptions += 1
             if cs in ("MANUALLY_RELEASED", "BLOCKED"):
                 human_resolved += 1

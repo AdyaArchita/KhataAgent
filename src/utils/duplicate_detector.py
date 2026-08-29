@@ -17,6 +17,16 @@ def check_duplicate_invoice(db_path: str, incoming_invoice: dict) -> dict | None
     try:
         inv_date = datetime.strptime(invoice_date_str, "%Y-%m-%d").date()
     except ValueError:
+        # Non-ISO date formats (e.g. "31/03/2024", "04-Mar-2024") cannot be
+        # parsed — duplicate detection is DISABLED for this record.
+        # Log at WARNING so the failure is observable in the audit trail
+        # rather than silently returning None (fix 20c / PARSER_EXTRACTION_DRIFT).
+        logger.warning(
+            "duplicate_detector: non-ISO invoice_date %r could not be parsed "
+            "(expected YYYY-MM-DD). Duplicate detection SKIPPED for this record. "
+            "Check _parse_invoice_text for date format normalisation.",
+            invoice_date_str,
+        )
         return None
         
     start_date = (inv_date - timedelta(days=3)).strftime("%Y-%m-%d")

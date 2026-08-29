@@ -1,4 +1,4 @@
-export type MatchStatus = 'MATCH' | 'MISMATCH' | 'PARTIAL_MATCH' | 'PENDING' | 'SYSTEM_FAILURE' | 'PENDING REVIEW';
+export type MatchStatus = 'MATCH' | 'MISMATCH' | 'PARTIAL_MATCH' | 'PENDING' | 'SYSTEM_FAILURE' | 'PENDING REVIEW' | 'NON_DETERMINISTIC_FAILURE';
 
 export interface RunSummary {
   run_id: string;

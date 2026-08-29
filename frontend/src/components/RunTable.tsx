@@ -94,7 +94,7 @@ const StatusBadge: React.FC<{ status: MatchStatus }> = ({ status }) => {
   if (status === 'MATCH') badgeClass = 'badge-match';
   else if (status === 'PARTIAL_MATCH') badgeClass = 'badge-partial';
   else if (status === 'MISMATCH') badgeClass = 'badge-mismatch';
-  else if (status === 'SYSTEM_FAILURE') badgeClass = 'badge-failure';
+  else if (status === 'SYSTEM_FAILURE' || status === 'NON_DETERMINISTIC_FAILURE') badgeClass = 'badge-failure';
   else if (status === 'PENDING REVIEW') badgeClass = 'badge-mismatch';
   
   return (

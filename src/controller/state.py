@@ -6,7 +6,7 @@ import uuid
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from models.contracts import (
     AnomalyFlag,
@@ -29,8 +29,13 @@ class MatchStatus(str, Enum):
 
 
 class Discrepancy(str, Enum):
-    """Specific financial discrepancy types."""
+    """Specific financial discrepancy types.
 
+    Values are grouped by the pipeline layer that produces them.
+    Add new values here AND to generate_dataset.py's disc_type→enum map.
+    """
+
+    # ── original values (kept for backward-compat) ───────────────────
     DUPLICATE_INVOICE = "DUPLICATE_INVOICE"
     AMOUNT_MISMATCH = "AMOUNT_MISMATCH"
     TAX_MISMATCH = "TAX_MISMATCH"
@@ -39,6 +44,75 @@ class Discrepancy(str, Enum):
     DUPLICATE = "DUPLICATE"
     CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
     GSTIN_MISMATCH = "GSTIN_MISMATCH"
+
+    # ── gateway & settlement ──────────────────────────────────────────
+    RAZORPAY_FEE_MISMATCH           = "RAZORPAY_FEE_MISMATCH"
+    SETTLEMENT_CURRENCY_FX_MISMATCH = "SETTLEMENT_CURRENCY_FX_MISMATCH"
+    SETTLEMENT_OVERPAYMENT          = "SETTLEMENT_OVERPAYMENT"
+    SETTLEMENT_MISSING              = "SETTLEMENT_MISSING"
+
+    # ── invoice lifecycle ─────────────────────────────────────────────
+    ORPHAN_CREDIT_NOTE              = "ORPHAN_CREDIT_NOTE"
+    DOCUMENT_TYPE_MISMATCH          = "DOCUMENT_TYPE_MISMATCH"
+    BROKEN_AMENDMENT_CHAIN          = "BROKEN_AMENDMENT_CHAIN"
+    IRN_VALIDATION_FAILURE          = "IRN_VALIDATION_FAILURE"
+
+    # ── regulatory compliance ─────────────────────────────────────────
+    RCM_CLASSIFICATION_ERROR        = "RCM_CLASSIFICATION_ERROR"
+    GSTIN_SCHEME_MISMATCH           = "GSTIN_SCHEME_MISMATCH"
+    ITC_PERIOD_MISMATCH             = "ITC_PERIOD_MISMATCH"
+    SEZ_TAX_VIOLATION               = "SEZ_TAX_VIOLATION"
+
+    # ── fraud & identity ──────────────────────────────────────────────
+    PAN_GSTIN_SPOOF_MISMATCH        = "PAN_GSTIN_SPOOF_MISMATCH"
+
+    # ── tax classification ────────────────────────────────────────────
+    HSN_RATE_MISMATCH               = "HSN_RATE_MISMATCH"
+    TCS_WITHHOLDING_MISMATCH        = "TCS_WITHHOLDING_MISMATCH"
+    CESS_COMPONENT_MISMATCH         = "CESS_COMPONENT_MISMATCH"
+    TDS_WITHHOLDING_MISMATCH        = "TDS_WITHHOLDING_MISMATCH"
+
+    # ── legal / document ──────────────────────────────────────────────
+    LEGAL_TEXT_AMOUNT_MISMATCH      = "LEGAL_TEXT_AMOUNT_MISMATCH"
+
+    # ── LLM & sandbox ────────────────────────────────────────────────
+    ADVERSARIAL_INJECTION_ATTEMPT   = "ADVERSARIAL_INJECTION_ATTEMPT"
+    CONTEXT_WINDOW_EXHAUSTION       = "CONTEXT_WINDOW_EXHAUSTION"
+    CONTEXT_TRUNCATION_FAILURE      = "CONTEXT_TRUNCATION_FAILURE"
+    ZERO_VALUE_DIV_ERROR            = "ZERO_VALUE_DIV_ERROR"
+    MASKED_TAX_RATE_MISMATCH        = "MASKED_TAX_RATE_MISMATCH"
+    MARKDOWN_STRIP_FAILURE          = "MARKDOWN_STRIP_FAILURE"
+    SYNTAX_BOOLEAN_TYPE_ERROR       = "SYNTAX_BOOLEAN_TYPE_ERROR"
+
+    # ── parser & serialisation ────────────────────────────────────────
+    PARSER_EXTRACTION_DRIFT         = "PARSER_EXTRACTION_DRIFT"
+    DATE_FORMAT_AMBIGUITY           = "DATE_FORMAT_AMBIGUITY"
+    LINEAGE_SERIALIZATION_DRIFT     = "LINEAGE_SERIALIZATION_DRIFT"
+
+    # ── statistical anomaly ───────────────────────────────────────────
+    ANOMALY_DETECTOR_SUPPRESSED     = "ANOMALY_DETECTOR_SUPPRESSED"
+    BENFORD_LAW_VIOLATION           = "BENFORD_LAW_VIOLATION"
+
+    # ── temporal & timezone ───────────────────────────────────────────
+    TIMEZONE_BOUNDARY_SHIFT         = "TIMEZONE_BOUNDARY_SHIFT"
+    FUTURE_DATED_INVOICE            = "FUTURE_DATED_INVOICE"
+
+    # ── data poisoning & serialisation limits ─────────────────────────
+    NON_FINITE_FLOAT_CRASH          = "NON_FINITE_FLOAT_CRASH"
+    EMPTY_CONTEXT_HALLUCINATION     = "EMPTY_CONTEXT_HALLUCINATION"
+    DB_COLUMN_TRUNCATION            = "DB_COLUMN_TRUNCATION"
+
+    # ── orchestration & infrastructure ───────────────────────────────
+    GRAPH_RECURSION_LIMIT_EXCEEDED  = "GRAPH_RECURSION_LIMIT_EXCEEDED"
+    CONCURRENCY_OVERWRITE_DETECTED  = "CONCURRENCY_OVERWRITE_DETECTED"
+    BACKDATED_LEDGER_ENTRY          = "BACKDATED_LEDGER_ENTRY"
+
+    # ── enterprise statutory & compliance edge cases ──────────────────
+    BLOCKED_ITC_CLAIM_ERROR          = "BLOCKED_ITC_CLAIM_ERROR"
+    INACTIVE_SUSPENDED_GSTIN_ERROR   = "INACTIVE_SUSPENDED_GSTIN_ERROR"
+    CREDIT_NOTE_VALUE_EXHAUSTION     = "CREDIT_NOTE_VALUE_EXHAUSTION"
+    AGGREGATION_ORDER_OF_OPERATIONS  = "AGGREGATION_ORDER_OF_OPERATIONS"
+    MULTI_PAGE_CONTEXT_MISALIGNMENT  = "MULTI_PAGE_CONTEXT_MISALIGNMENT"
 
 
 VendorTier = Literal["STANDARD", "ENHANCED", "MANDATORY_AUDIT"]
@@ -77,6 +151,16 @@ class TransactionData(BaseModel):
     line_items: list[LineItem] = Field(default_factory=list)
     invoice_date: str = ""
     raw_invoice_text: str = ""
+
+    @field_validator('*', mode='before')
+    @classmethod
+    def reject_non_finite_floats(cls, v):
+        import math
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            raise ValueError("NON_FINITE_FLOAT_CRASH")
+        if isinstance(v, str) and v.lower() in ['nan', 'inf', '-inf', 'infinity', '-infinity']:
+            raise ValueError("NON_FINITE_FLOAT_CRASH")
+        return v
 
 
 class ReconciliationState(BaseModel):
