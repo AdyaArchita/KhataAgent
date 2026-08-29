@@ -15,98 +15,93 @@ export const RunDetail: React.FC<RunDetailProps> = ({ runId }) => {
     let mounted = true;
     setLoading(true);
     setError(null);
-
     fetchRunDetail(runId)
       .then((data) => {
-        if (mounted) {
-          setDetail(data);
-          setLoading(false);
-        }
+        if (mounted) { setDetail(data); setLoading(false); }
       })
       .catch((err) => {
-        if (mounted) {
-          setError(err.message || 'Failed to load details');
-          setLoading(false);
-        }
+        if (mounted) { setError(err.message || 'Failed to load details'); setLoading(false); }
       });
-
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [runId]);
 
-  if (loading) return <div className="detail-panel detail-loading">Loading details...</div>;
-  if (error || !detail) return <div className="detail-panel detail-error">{error || 'Unknown error'}</div>;
+  if (loading) return <div style={{ padding: '40px', textAlign: 'center', color: '#6b7280', fontSize: '13px' }}>Loading transaction telemetry...</div>;
+  if (error || !detail) return <div style={{ padding: '20px', color: '#b91c1c', backgroundColor: '#fef2f2', border: '1px solid #f87171', borderRadius: '6px' }}>{error || 'Unknown error'}</div>;
 
   const ev = detail.evidence_contract || {};
   
-  // Build Visual Audit Path
   const timelineSteps = [
-    { title: 'Invoice', desc: `Ledger ID: ${detail.ledger_id}` },
-    { title: 'Extracted Numbers', desc: 'Document parsed successfully' },
-    { title: 'Generated Quant Code', desc: detail.generated_code ? 'Code generated' : 'Skipped' },
-    { title: 'Execution Result', desc: detail.execution_result ? JSON.stringify(detail.execution_result) : 'N/A' },
-    { title: 'Tolerance Check', desc: ev.tolerance_check ? 'Passed (<= 0.01)' : 'Failed' },
-    { title: 'AI Diagnosis', desc: detail.match_status },
-    { title: 'Vendor Trust Tier', desc: detail.vendor_tier || 'STANDARD' }
+    { title: 'Invoice Ingestion', desc: `Ledger ID: ${detail.ledger_id}` },
+    { title: 'Extraction Matrix', desc: 'OCR & Layout Parsing Complete' },
+    { title: 'QuantAgent Synthesis', desc: detail.generated_code ? 'Python AST Generated' : 'Bypassed' },
+    { title: 'Sandbox Execution', desc: detail.execution_result ? 'Outputs Captured' : 'N/A' },
+    { title: 'Reconciliation Engine', desc: detail.match_status },
+    { title: 'Trust Profiling', desc: `Tier: ${detail.vendor_tier || 'STANDARD'}` }
   ];
-  
-  if (ev.human_clearance) {
-    timelineSteps.push({ 
-      title: 'Human Decision', 
-      desc: `${ev.human_clearance.decision.toUpperCase()} by ${ev.human_clearance.reviewed_by}` 
-    });
-  }
 
   const reason = detail.exception_reason || detail.system_failure_reason;
 
   return (
-    <div className="detail-panel" style={{ display: 'flex', gap: '20px' }}>
-      <div style={{ flex: 1 }}>
-        <div className="detail-section">
-          <h3>Self-Consistency Replay</h3>
-          {ev.self_consistency !== undefined ? (
-            <div style={{ padding: '10px', background: ev.self_consistency ? '#f0fdf4' : '#fef2f2', border: `1px solid ${ev.self_consistency ? '#bbf7d0' : '#fecaca'}`, borderRadius: '4px' }}>
-              <strong>{ev.self_consistency ? 'PASS' : 'FAIL'}</strong> 
-              {ev.replay_delta != null && ` (Delta: ${ev.replay_delta})`}
+    <div style={{ backgroundColor: '#ffffff', padding: '32px', borderTop: '1px solid #e5e7eb', boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.02)' }}>
+      
+      <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: '48px', marginBottom: '32px' }}>
+        <div>
+          <h3 style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '16px', borderBottom: '1px solid #e5e7eb', paddingBottom: '8px' }}>
+            Pipeline Diagnostics
+          </h3>
+          
+          <div style={{ marginBottom: '24px' }}>
+            <span style={{ fontSize: '13px', fontWeight: 500, color: '#374151' }}>Detected Discrepancies</span>
+            {detail.discrepancies?.length > 0 ? (
+              <ul style={{ margin: '8px 0 0 0', paddingLeft: '20px', color: '#b91c1c', fontSize: '13px', fontFamily: 'ui-monospace, SFMono-Regular, monospace' }}>
+                {detail.discrepancies.map((d, idx) => <li key={idx} style={{ marginBottom: '4px' }}>{d}</li>)}
+              </ul>
+            ) : <p style={{ margin: '8px 0 0 0', fontSize: '13px', color: '#9ca3af', fontStyle: 'italic' }}>Clean matching matrix.</p>}
+          </div>
+
+          {reason && (
+            <div style={{ padding: '16px', backgroundColor: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px' }}>
+              <span style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#92400e', marginBottom: '4px', textTransform: 'uppercase' }}>System Halt Reason</span>
+              <span style={{ fontSize: '13px', color: '#b45309', fontFamily: 'ui-monospace, SFMono-Regular, monospace' }}>{reason}</span>
             </div>
-          ) : (
-            <div style={{ padding: '10px', background: '#f3f4f6', borderRadius: '4px' }}>Not evaluated</div>
           )}
         </div>
-
-        <div className="detail-section">
-          <h3>Discrepancies</h3>
-          {detail.discrepancies?.length > 0 ? (
-            <ul className="discrepancy-list">
-              {detail.discrepancies.map((d, idx) => <li key={idx}>{d}</li>)}
-            </ul>
-          ) : <p className="empty-text">No discrepancies recorded.</p>}
-        </div>
-
-        {reason && (
-          <div className="detail-section">
-            <h3>Exception Reason</h3>
-            <p className="reason-text">{reason}</p>
+        
+        <div>
+          <h3 style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '16px', borderBottom: '1px solid #e5e7eb', paddingBottom: '8px' }}>
+            Audit Lineage
+          </h3>
+          <div style={{ position: 'relative', paddingLeft: '20px', borderLeft: '2px solid #e5e7eb' }}>
+            {timelineSteps.map((step, i) => (
+              <div key={i} style={{ marginBottom: '16px', position: 'relative' }}>
+                <div style={{ position: 'absolute', left: '-25px', top: '4px', width: '8px', height: '8px', borderRadius: '50%', background: '#d1d5db', border: '2px solid #fff' }} />
+                <div style={{ fontWeight: 500, fontSize: '13px', color: '#111827' }}>{step.title}</div>
+                <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>{step.desc}</div>
+              </div>
+            ))}
           </div>
-        )}
-
-        <div className="detail-section">
-          <h3>Generated Code</h3>
-          <pre className="code-block">{detail.generated_code || 'No code'}</pre>
         </div>
       </div>
-      
-      <div style={{ flex: 1, borderLeft: '1px solid #ddd', paddingLeft: '20px' }}>
-        <h3>Visual Audit Path</h3>
-        <div style={{ position: 'relative', paddingLeft: '15px', borderLeft: '2px solid #e5e7eb' }}>
-          {timelineSteps.map((step, i) => (
-            <div key={i} style={{ marginBottom: '15px', position: 'relative' }}>
-              <div style={{ position: 'absolute', left: '-21px', top: '4px', width: '10px', height: '10px', borderRadius: '50%', background: '#6366f1', border: '2px solid white' }} />
-              <div style={{ fontWeight: 'bold', fontSize: '13px', color: '#374151' }}>{step.title}</div>
-              <div style={{ fontSize: '12px', color: '#6b7280', overflowWrap: 'break-word', whiteSpace: 'pre-wrap' }}>{step.desc}</div>
-            </div>
-          ))}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+        <div style={{ border: '1px solid #e5e7eb', borderRadius: '6px', overflow: 'hidden' }}>
+          <div style={{ backgroundColor: '#f9fafb', padding: '8px 16px', borderBottom: '1px solid #e5e7eb', fontSize: '12px', fontWeight: 500, color: '#4b5563', display: 'flex', justifyContent: 'space-between' }}>
+            <span>quant_agent.py</span>
+            <span style={{ color: '#9ca3af' }}>Python AST</span>
+          </div>
+          <pre style={{ margin: 0, padding: '16px', overflowX: 'auto', backgroundColor: '#ffffff', color: '#1f2937', fontSize: '12px', fontFamily: 'ui-monospace, SFMono-Regular, monospace', maxHeight: '300px' }}>
+            {detail.generated_code || '# Execution bypassed for this transaction.'}
+          </pre>
+        </div>
+
+        <div style={{ border: '1px solid #e5e7eb', borderRadius: '6px', overflow: 'hidden' }}>
+          <div style={{ backgroundColor: '#f9fafb', padding: '8px 16px', borderBottom: '1px solid #e5e7eb', fontSize: '12px', fontWeight: 500, color: '#4b5563', display: 'flex', justifyContent: 'space-between' }}>
+            <span>evidence_contract.json</span>
+            <span style={{ color: '#9ca3af' }}>JSON Payload</span>
+          </div>
+          <pre style={{ margin: 0, padding: '16px', overflowX: 'auto', backgroundColor: '#ffffff', color: '#1f2937', fontSize: '12px', fontFamily: 'ui-monospace, SFMono-Regular, monospace', maxHeight: '300px' }}>
+            {Object.keys(ev).length > 0 ? JSON.stringify(ev, null, 2) : '{\n  "status": "No contract generated"\n}'}
+          </pre>
         </div>
       </div>
     </div>
