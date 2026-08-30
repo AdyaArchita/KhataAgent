@@ -48,3 +48,20 @@ export async function fetchRunDetail(run_id: string): Promise<RunDetail> {
   }
   return response.json();
 }
+
+export async function submitHitlDecision(runId: string, decision: 'approve' | 'reject' | 'override', reason: string): Promise<any> {
+  const response = await fetch(`/api/reconciliation/${runId}/clearance`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ decision, reason, reviewed_by: 'demo_user' })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    throw new Error(errorData?.detail || `Failed to submit decision for run ${runId}`);
+  }
+
+  return response.json();
+}

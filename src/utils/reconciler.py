@@ -17,10 +17,16 @@ def check_razorpay_settlement(db_path: str, invoice_id: str, ledger_amount: floa
     settlement_id, amount_settled, gateway_fee = row
     expected_settled_amount = ledger_amount - gateway_fee
     variance = amount_settled - expected_settled_amount
-    is_3way_matched = abs(variance) <= 1.00
+    
+    # Verify gateway fee is exactly 2% (0.02)
+    expected_fee = round(ledger_amount * 0.02, 2)
+    fee_variance = gateway_fee - expected_fee
+    fee_verified = abs(fee_variance) <= 1.00
+    
+    is_3way_matched = (abs(variance) <= 1.00) and fee_verified
     
     return {
         "is_3way_matched": bool(is_3way_matched),
         "variance": float(variance),
-        "gateway_fee_verified": True
+        "gateway_fee_verified": bool(fee_verified)
     }

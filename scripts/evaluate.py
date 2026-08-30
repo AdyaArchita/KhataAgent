@@ -83,7 +83,7 @@ def load_records(
     cur = conn.cursor()
 
     query = (
-        "SELECT ledger_id, expected_status, expected_discrepancy_type, "
+        "SELECT ledger_id, expected_status, expected_discrepancy_type, expected_settlement_mismatch, "
         "vendor_name, invoice_number FROM ledger"
     )
     params: list = []
@@ -152,6 +152,7 @@ def run_evaluation(limit: int | None = None, ledger_ids: list[str] | None = None
             "ledger_id": ledger_id,
             "expected_status": expected_status,
             "expected_discrepancy_type": expected_discrepancy_type,
+            "expected_settlement_mismatch": rec.get("expected_settlement_mismatch", 0),
             "actual_status": "ERROR",
             "confidence": 0.0,
             "discrepancies": [],
@@ -268,6 +269,12 @@ def run_evaluation(limit: int | None = None, ledger_ids: list[str] | None = None
             if "actual_status" not in r:
                 continue
             exp_set = {r["expected_discrepancy_type"]} if r.get("expected_discrepancy_type") else set()
+            
+            # Phase 4.1: RAZORPAY_SETTLEMENT_MISMATCH handling
+            # It's an independent column because it's a 3-way check on top of the document pipeline
+            if r.get("expected_settlement_mismatch") == 1:
+                exp_set.add("RAZORPAY_SETTLEMENT_MISMATCH")
+                
             pred_set = set(r.get("discrepancies", []))
             all_types = exp_set | pred_set
             for t in all_types:

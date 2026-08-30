@@ -136,7 +136,8 @@ def get_runs(db: sqlite3.Connection = Depends(get_db)):
             created_at=row_dict["created_at"],
             vendor_tier=row_dict.get("vendor_tier", "STANDARD"),
             requires_human_review=bool(row_dict.get("requires_human_review", False)),
-            evidence_contract=evidence_contract
+            evidence_contract=evidence_contract,
+            clearance_state=row_dict.get("clearance_state", "AUTO_CLEARED")
         ))
     return results
 

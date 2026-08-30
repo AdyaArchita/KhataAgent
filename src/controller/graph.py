@@ -186,6 +186,18 @@ def _document_parser_inner(state: ReconciliationState) -> dict[str, Any]:
             "system_failure_reason": "0-byte file intercepted",
         }
 
+    # ── Phase 1.1b: Non-finite Value Guard ───────────────────────────
+    import re
+    if re.search(r"(?:TOTAL|CGST|SGST|IGST)[^\n]*?\b(NaN|Infinity|-Infinity)\b",
+                 raw_text, re.IGNORECASE):
+        logger.error("Non-finite value detected in invoice text for ledger_id=%s.", ledger_id)
+        return {
+            "match_status": MatchStatus.MISMATCH,
+            "confidence": 1.0,
+            "discrepancies": [Discrepancy.NON_FINITE_FLOAT_CRASH],
+            "system_failure_reason": "Non-finite value (NaN/Infinity) detected in invoice text",
+        }
+
     # ── Phase 1.2: Removed Adversarial Injection Firewall ────────────────
     # We let the LLM handle the text natively to test if it resists the injection.
 
@@ -197,19 +209,18 @@ def _document_parser_inner(state: ReconciliationState) -> dict[str, Any]:
 
     from pydantic import ValidationError
     try:
-        updated_transaction = state.transaction.model_copy(
-            update={
-                "vendor_name": parsed.get("vendor_name", ""),
-                "invoice_number": parsed.get("invoice_number", ""),
-                "amount": parsed.get("amount", 0.0),
-                "tax_amount": parsed.get("tax_amount", 0.0),
-                "tax_rate": parsed.get("tax_rate", 0.0),
-                "gstin": parsed.get("gstin", ""),
-                "currency": parsed.get("currency", "INR"),
-                "line_items": line_items,
-                "invoice_date": parsed.get("invoice_date", ""),
-            }
-        )
+        updated_transaction = TransactionData.model_validate({
+            **state.transaction.model_dump(),
+            "vendor_name": parsed.get("vendor_name", ""),
+            "invoice_number": parsed.get("invoice_number", ""),
+            "amount": parsed.get("amount", 0.0),
+            "tax_amount": parsed.get("tax_amount", 0.0),
+            "tax_rate": parsed.get("tax_rate", 0.0),
+            "gstin": parsed.get("gstin", ""),
+            "currency": parsed.get("currency", "INR"),
+            "line_items": [item for item in parsed.get("line_items", [])],
+            "invoice_date": parsed.get("invoice_date", ""),
+        })
     except ValidationError as e:
         if "NON_FINITE_FLOAT_CRASH" in str(e):
             return {
@@ -291,16 +302,21 @@ def _parse_invoice_text(text: str) -> dict[str, Any]:
     if m:
         result["currency"] = m.group(1).strip()
 
-    # Line items
+    # Line items — pattern uses re.DOTALL so the description can span the
+    # injected-newline adversarial noise; we then strip the description to
+    # the first line only to recover the canonical item name.
     item_pattern = (
-        r"(\d+)\.\s+(.+?)\s*-\s*Qty:\s*([\d.]+)\s*x\s*"
+        r"(\d+)\.\s+([\s\S]+?)\s*-\s*Qty:\s*([\d.]+)\s*x\s*"
         r"(?:Rs\.|₹)?\s*([\d,]+\.?\d*)\s*=\s*(?:Rs\.|₹)?\s*([\d,]+\.?\d*)"
     )
     line_items: list[dict] = []
     for match in re.finditer(item_pattern, text):
+        # Strip the description to its first line, discarding any injected text
+        raw_desc = match.group(2).strip()
+        clean_desc = raw_desc.splitlines()[0].strip()
         line_items.append(
             {
-                "description": match.group(2).strip(),
+                "description": clean_desc,
                 "quantity": float(match.group(3)),
                 "unit_price": float(match.group(4).replace(",", "")),
                 "amount": float(match.group(5).replace(",", "")),
@@ -535,6 +551,14 @@ def _exception_handler_inner(state: ReconciliationState) -> dict[str, Any]:
                 f"{result.get('line_items_extra', '?')} extra/duplicate line "
                 f"item(s) on invoice"
             )
+        elif d == Discrepancy.MASKED_TAX_RATE_MISMATCH:
+            parts.append("Masked tax rate mismatch detected")
+        elif d == Discrepancy.EMPTY_CONTEXT_HALLUCINATION:
+            parts.append("Empty context hallucination detected")
+        elif d == Discrepancy.NON_FINITE_FLOAT_CRASH:
+            parts.append("Non-finite float crash detected")
+        elif d == Discrepancy.ORPHAN_CREDIT_NOTE:
+            parts.append("Orphan credit note detected")
 
     status_label = state.match_status.value
     reason = (
@@ -804,11 +828,13 @@ def run_pipeline(
         
     if three_way_match and not three_way_match["is_3way_matched"]:
         final_state.discrepancies.append(Discrepancy.RAZORPAY_SETTLEMENT_MISMATCH) if hasattr(Discrepancy, 'RAZORPAY_SETTLEMENT_MISMATCH') else None
+        final_state.match_status = MatchStatus.MISMATCH
         clearance_state = "PENDING_HUMAN_AUDIT"
         
     if final_state.duplicate_risk is not None:
         if hasattr(Discrepancy, 'DUPLICATE_INVOICE'):
             final_state.discrepancies.append(Discrepancy.DUPLICATE_INVOICE)
+            final_state.match_status = MatchStatus.MISMATCH
         clearance_state = "PENDING_HUMAN_AUDIT"
     
     # ── build evidence contract ──────────────────────────────────────

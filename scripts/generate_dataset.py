@@ -406,7 +406,8 @@ CREATE TABLE IF NOT EXISTS ledger (
     invoice_date    TEXT NOT NULL,
     created_at      TEXT NOT NULL,
     expected_status TEXT,
-    expected_discrepancy_type TEXT
+    expected_discrepancy_type TEXT,
+    expected_settlement_mismatch INTEGER
 );
 """
 
@@ -524,7 +525,6 @@ def generate(*, with_embeddings: bool = False) -> None:
         # PAN_GSTIN_SPOOF_MISMATCH: adds a cosmetic "Vendor PAN:" text line only;
         #   no PAN/GSTIN cross-validation exists in the mutator or pipeline.
         _MATCH_RELABELED_TYPES = {
-            "RAZORPAY_FEE_MISMATCH",
             "MARKDOWN_STRIP_FAILURE",
             "CONTEXT_TRUNCATION_FAILURE",
             "ADVERSARIAL_INJECTION_ATTEMPT",
@@ -533,6 +533,10 @@ def generate(*, with_embeddings: bool = False) -> None:
         if disc_type in _MATCH_RELABELED_TYPES:
             expected_status = "MATCH"
             expected_discrepancy_type = None
+        elif disc_type == "RAZORPAY_FEE_MISMATCH":
+            # 3-way check is now active in reconciler.py and verifies exactly 2%
+            expected_status = "MISMATCH"
+            expected_discrepancy_type = "RAZORPAY_SETTLEMENT_MISMATCH"
 
         # Phase 4.2: Adversarial False Positive
         if idx in (105, 106):
@@ -550,11 +554,27 @@ def generate(*, with_embeddings: bool = False) -> None:
         invoice_data = mutation_result["invoice"]
         flags = mutation_result["flags"]
 
+        # Phase 4.1: RAZORPAY_FEE_MISMATCH (4.5% instead of 2%)
+        fee_rate = 0.045 if flags.get("razorpay_fee_mismatch") else 0.02
+        gateway_fee = round(ledger_record["amount"] * fee_rate, 2)
+        expected_settlement_mismatch = 0
+        
+        # If it's a fee mismatch, it will fail the strict 2% check in reconciler.py
+        if flags.get("razorpay_fee_mismatch"):
+            expected_settlement_mismatch = 1
+
+        if rng.random() < 0.05:
+            amount_settled = round(ledger_record["amount"] - gateway_fee - rng.uniform(10, 500), 2)
+            expected_settlement_mismatch = 1
+            expected_status = "MISMATCH"
+        else:
+            amount_settled = round(ledger_record["amount"] - gateway_fee, 2)
+
         cur.execute(
             "INSERT INTO ledger "
             "(ledger_id, vendor_name, invoice_number, amount, tax_amount, "
-            " tax_rate, gstin, currency, line_items, invoice_date, created_at, expected_status, expected_discrepancy_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " tax_rate, gstin, currency, line_items, invoice_date, created_at, expected_status, expected_discrepancy_type, expected_settlement_mismatch) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ledger_record["ledger_id"],
                 ledger_record["vendor_name"],
@@ -568,18 +588,11 @@ def generate(*, with_embeddings: bool = False) -> None:
                 ledger_record["invoice_date"],
                 ledger_record["created_at"],
                 expected_status,
-                expected_discrepancy_type
+                expected_discrepancy_type,
+                expected_settlement_mismatch
             ),
         )
 
-        # Phase 4.1: RAZORPAY_FEE_MISMATCH (4.5% instead of 2%)
-        fee_rate = 0.045 if flags.get("razorpay_fee_mismatch") else 0.02
-        gateway_fee = round(ledger_record["amount"] * fee_rate, 2)
-        if rng.random() < 0.05:
-            amount_settled = round(ledger_record["amount"] - gateway_fee - rng.uniform(10, 500), 2)
-        else:
-            amount_settled = round(ledger_record["amount"] - gateway_fee, 2)
-        
         cur.execute(
             "INSERT INTO razorpay_settlements "
             "(settlement_id, invoice_id, settlement_status, amount_settled, gateway_fee, processed_at) "

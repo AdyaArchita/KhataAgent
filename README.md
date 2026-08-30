@@ -112,6 +112,15 @@ The live demo consists of two pieces: the FastAPI backend and the Vite frontend.
    ```
    *Open `http://localhost:5173` to view the "paper aesthetic" dashboard, including the live metrics panel and vendor trust indicators.*
 > **Note on Evaluation Tracking:** The live metrics stream now actively tracks batch evaluation runs. When `evaluate.py` is triggered, the dashboard dynamically isolates that specific batch (e.g., `LIVE (BATCH_1A2B3C4D)`) to provide a clean snapshot of the system's performance for that run, without historical data contamination.
+
+## Recent Fixes
+- **Pydantic v2 Validation Bypass**: Fixed an issue where `model_copy(update=...)` silently bypassed custom validation hooks. Replaced with dictionary merging and `model_validate()` to guarantee non-finite float rejection.
+- **QuantAgent Tax-Rate Refinement**: Improved `QuantAgent` prompt to strictly enforce independent rate vs. total evaluations, eliminating false positives for `MASKED_TAX_RATE_MISMATCH` and correctly isolating `TAX_MISMATCH`.
+- **Razorpay 3-Way Settlement Strictness**: Upgraded the settlement engine to explicitly enforce a 2% gateway fee limit. Variable or inflated fees (e.g., 4.5%) are now actively caught and correctly flagged as `RAZORPAY_SETTLEMENT_MISMATCH`.
+- **Duplicate Invoice Detection**: Improved the SQL logic to strictly filter by `invoice_number` as an AND condition, eliminating false positives on identical amounts from the same vendor.
+- **System Failure Resilience**: Removed misleading regex examples from the QuantAgent prompt that were causing the LLM to generate syntactically invalid Python (e.g., `(?\.?)`), dramatically reducing `SYSTEM_FAILURE` drops.
+- **Exception Trace Formatting**: Ensured missing discrepancy types (e.g., Non-finite floats, Empty Context Hallucinations, Masked Tax Rates) are properly serialized into the human-readable Audit Log narrative instead of leaving empty blank reasons.
+
 ## Batch Evaluation
 To evaluate the system's accuracy across the entire synthetic dataset (baseline), run the evaluation harness:
 ```bash

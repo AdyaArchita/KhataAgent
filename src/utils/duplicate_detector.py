@@ -36,13 +36,15 @@ def check_duplicate_invoice(db_path: str, incoming_invoice: dict) -> dict | None
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         
+        invoice_number = incoming_invoice.get("invoice_number", "")
         query = """
             SELECT ledger_id, amount FROM ledger 
-            WHERE (gstin = ? OR vendor_name = ?) 
+            WHERE invoice_number = ?
+            AND (gstin = ? OR vendor_name = ?) 
             AND invoice_date BETWEEN ? AND ?
             AND ledger_id != ?
         """
-        rows = conn.execute(query, (gstin or "", vendor_name or "", start_date, end_date, current_ledger_id)).fetchall()
+        rows = conn.execute(query, (invoice_number, gstin or "", vendor_name or "", start_date, end_date, current_ledger_id)).fetchall()
         
         for row in rows:
             if abs(row["amount"] - amount) <= 0.01:
