@@ -814,12 +814,14 @@ def run_pipeline(
 
     # ── compute 3-way match ──────────────────────────────────────────
     from utils.reconciler import check_razorpay_settlement
-    ledger_amount = final_state.ledger_record["amount"] if final_state.ledger_record else final_state.transaction.amount
-    three_way_match = check_razorpay_settlement(
-        str(_DB_PATH),
-        final_state.transaction.ledger_id,
-        ledger_amount
-    )
+    three_way_match = None
+    if final_state.ledger_record and final_state.match_status != MatchStatus.SYSTEM_FAILURE:
+        if Discrepancy.EMPTY_CONTEXT_HALLUCINATION not in final_state.discrepancies and Discrepancy.NON_FINITE_FLOAT_CRASH not in final_state.discrepancies:
+            three_way_match = check_razorpay_settlement(
+                str(_DB_PATH),
+                final_state.transaction.ledger_id,
+                final_state.ledger_record["amount"]
+            )
     
     # ── compute clearance state ──────────────────────────────────────
     clearance_state = "AUTO_CLEARED"
