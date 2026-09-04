@@ -312,28 +312,30 @@ _SYSTEM_PROMPT = textwrap.dedent("""\
       (Use simple regex: e.g. `re.search(r'(?:IGST|GST|Tax)\s*\(\s*([0-9.]+)\s*%\s*\)', text)`)
 
     ## Tolerances
-    - Amount/tax differences of < 0.01 are exact MATCH (do not emit any discrepancy).
-    - Amount/tax differences >= 0.01 and <= 2.0 are minor discrepancies: return PARTIAL_MATCH with AMOUNT_MISMATCH (or TAX_MISMATCH).
-    - Amount/tax differences > 2.0 are major discrepancies: return MISMATCH with AMOUNT_MISMATCH (or TAX_MISMATCH).
+    **Strict Evaluation Hierarchy:**
+    You must determine the final `match_status` based STRICTLY on the contents of the `discrepancies` list and the numerical variance.
 
-    ## Step order — evaluate in this order; stop at the first that fires
-    (For ANY discrepancy, match_status must be MISMATCH, not SYSTEM_FAILURE.)
-    1. Empty/unreadable input. If `raw_invoice_text` is empty or lacks extractable financial data, return EMPTY_CONTEXT_HALLUCINATION.
-    2. Non-finite values. Scan `raw_invoice_text` directly (case-insensitive) for the EXACT WORDS 'NaN', 'Infinity', or '-Infinity'. Use word boundaries (e.g. `r'\b(nan|infinity|-infinity)\b'`) so you do not accidentally match words like 'financial'. If found, return NON_FINITE_FLOAT_CRASH. Do not trust `invoice_data.amount` alone, as it might default to 0.0.
-    3. Credit note / negative amount. Check `ledger_data["amount"]` sign and `ledger_data["invoice_number"]` prefix. If ledger amount/tax_amount is negative or invoice_number starts with "CN-", return ORPHAN_CREDIT_NOTE.
+    1. **Rule 1: PERFECT MATCH:** If the `discrepancies` list is empty, return `MatchStatus.MATCH`.
+    2. **Rule 2: FATAL MISMATCH (Highest Priority):** If the `discrepancies` list contains ANY of the following: `GSTIN_MISMATCH`, `MASKED_TAX_RATE_MISMATCH`, `ORPHAN_CREDIT_NOTE`, `RAZORPAY_FEE_MISMATCH`, `ADVERSARIAL_INJECTION_ATTEMPT`, or missing/extra line items, you MUST return `MatchStatus.MISMATCH`. 
+    3. **Rule 3: MAJOR MATH VARIANCE:** If an `AMOUNT_MISMATCH` or `TAX_MISMATCH` is found where the absolute difference is strictly `> 2.00`, return `MatchStatus.MISMATCH`.
+    4. **Rule 4: PARTIAL MATCH (Minor Variance):** If and ONLY IF the `discrepancies` list contains NO fatal errors, and the only discrepancies are `AMOUNT_MISMATCH` or `TAX_MISMATCH` with an absolute difference strictly `<= 2.00`, return `MatchStatus.PARTIAL_MATCH`.
+
+    ## Step order — evaluate in this order
+    1. Empty/unreadable input. If `raw_invoice_text` is empty or lacks extractable financial data, append EMPTY_CONTEXT_HALLUCINATION to discrepancies list.
+    2. Non-finite values. Scan `raw_invoice_text` directly (case-insensitive) for the EXACT WORDS 'NaN', 'Infinity', or '-Infinity'. Use word boundaries (e.g. `r'\b(nan|infinity|-infinity)\b'`) so you do not accidentally match words like 'financial'. If found, append NON_FINITE_FLOAT_CRASH to discrepancies list. Do not trust `invoice_data.amount` alone, as it might default to 0.0.
+    3. Credit note / negative amount. Check `ledger_data["amount"]` sign and `ledger_data["invoice_number"]` prefix. If ledger amount/tax_amount is negative or invoice_number starts with "CN-", append ORPHAN_CREDIT_NOTE to discrepancies list.
     4. Tax rate cross-check. Extract displayed rate from `raw_invoice_text` as a number.
        - If you cannot cleanly extract a rate, do NOT assume a mismatch; continue to Step 5.
        - Convert the extracted percentage to a fraction (e.g., extracted_fraction = 18 / 100.0).
        - Evaluate two boolean conditions independently:
          rate_matches = abs(extracted_fraction - ledger_data["tax_rate"]) <= 0.005
          total_matches = abs(invoice_data.get("amount", 0.0) - ledger_data["amount"]) <= 1.0
-       - If not rate_matches and total_matches: return MASKED_TAX_RATE_MISMATCH
-       - If not rate_matches and not total_matches: return TAX_MISMATCH
-       - If rate_matches and not total_matches: do NOT return a tax discrepancy here, fall through to the amount check (Step 6).
+       - If not rate_matches and total_matches: append MASKED_TAX_RATE_MISMATCH to discrepancies list.
+       - If not rate_matches and not total_matches: append TAX_MISMATCH to discrepancies list.
        - Otherwise, continue to Step 5.
-    5. GSTIN. If `invoice_data["gstin"]` != `ledger_data["gstin"]` (character-for-character), return GSTIN_MISMATCH.
-    6. Amount. Compare invoice total (or `invoice_data["amount"]`) to `ledger_data["amount"]` (tolerance 1.0). If they differ, return AMOUNT_MISMATCH.
-    If none fire, match_status="MATCH", discrepancies=[].
+    5. GSTIN. If `invoice_data["gstin"]` != `ledger_data["gstin"]` (character-for-character), append GSTIN_MISMATCH to discrepancies list.
+    6. Amount. Compare invoice total against ledger total. Calculate the absolute difference. If the difference is > 0.00, append 'AMOUNT_MISMATCH' to the discrepancies list. Do NOT assign the match_status here.
+    7. Tax. Compare invoice tax against ledger tax. Calculate the absolute difference. If the difference is > 0.00, append 'TAX_MISMATCH' to the discrepancies list. Do NOT assign the match_status here.
 """)
 
 
@@ -427,8 +429,8 @@ class QuantAgent:
         ledger_data = self._extract_ledger_data(state)
 
         # ── LLM call and reflection loop ────────────────────────────
-        from langchain_core.messages import AIMessage
-        messages = [
+        from langchain_core.messages import AIMessage, BaseMessage
+        messages: list[BaseMessage] = [
             SystemMessage(content=_SYSTEM_PROMPT),
             HumanMessage(content=_build_human_prompt(invoice_data, ledger_data, state.transaction.raw_invoice_text)),
         ]

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: khataagent
+    env: docker
+    plan: free # Change to starter or standard if you need more resources
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false # You will need to enter this secret manually in the Render dashboard
+      - key: LLM_MODEL
+        value: "gemini-3.5-flash-lite"
